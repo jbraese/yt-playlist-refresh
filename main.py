@@ -2,9 +2,10 @@ from __future__ import unicode_literals
 from pprint import pprint
 from dataclasses import dataclass
 from difflib import SequenceMatcher
-import requests
 import argparse
 import json
+from concurrent.futures import ThreadPoolExecutor
+import requests
 import yt_dlp
 from tqdm import tqdm
 
@@ -52,23 +53,24 @@ def get_playlist_entries(url):
         return entries
 
 
-def get_unavailable_videos(videos):
+def is_video_available(video: YoutubeVideo):
     ydl_opts = {
         "simulate": True,  # do not actually download anything
     }
-    print("Checking whether videos in playlist are available...")
-    unavailable_videos = []
     with yt_dlp.YoutubeDL(ydl_base_opts | ydl_opts) as ydlp:
-        for entry in tqdm(videos):
-            try:
-                ydlp.download([entry.url])
-                print(".", end="", flush=True)
-            except yt_dlp.utils.DownloadError as err:
-                entry.unavailable_reason = err.msg
-                unavailable_videos.append(entry)
-                print("|", end="", flush=True)
-    print("\n Finished checking playlist, {} videos unavailable \n".format(
-        len(unavailable_videos)))
+        try:
+            ydlp.download([video.url])
+            return True, video
+        except yt_dlp.utils.DownloadError as err:
+            return False, video
+
+
+def get_unavailable_videos(videos):
+    unavailable_videos = []
+    pool = ThreadPoolExecutor(max_workers=10)
+    for available, video in pool.map(is_video_available, videos):
+        if not available:
+            unavailable_videos.append(video)
     return unavailable_videos
 
 
@@ -149,13 +151,18 @@ def check_wayback(video: YoutubeVideo):
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(description='Find alternatives for unavailable videos in a youtube playlist.')
+    parser = argparse.ArgumentParser(
+        description='Find alternatives for unavailable videos in a youtube playlist.')
     parser.add_argument(
         "url", help="URL of a non-private playlist", type=str)
     args = parser.parse_args()
     url = args.url
     playlist_entries = get_playlist_entries(url)
+    print("Playlist contains {} videos, now checking which are available. This may take a second.".format(
+        len(playlist_entries)))
     unavailable_videos = get_unavailable_videos(playlist_entries)
+    print("\n Finished checking playlist, {} videos unavailable \n".format(
+        len(unavailable_videos)))
     for idx, video in enumerate(unavailable_videos):
         suggest_alternatives(video, playlist_entries)
         if idx != len(unavailable_videos)-1:
