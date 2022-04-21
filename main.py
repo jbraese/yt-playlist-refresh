@@ -1,13 +1,14 @@
-from __future__ import unicode_literals
-from pprint import pprint
 from dataclasses import dataclass
-from difflib import SequenceMatcher
 import argparse
 import json
 from concurrent.futures import ThreadPoolExecutor
+from typing import List
 import requests
+from bs4 import BeautifulSoup
 import yt_dlp
-from tqdm import tqdm
+
+COLOR = "\033[0;36m"  # cyan
+RESET_COLOR = "\033[00m"
 
 
 class MyLogger(object):
@@ -32,12 +33,23 @@ class YoutubeVideo:
     url: str
     title: str
     channel: str
-    unavailable_reason: str = ""
 
     def display(self):
-        return "Title: '" + self.title + \
-            "' from Channel: '" + self.channel + \
-            "', URL: " + self.url
+        text = ""
+        if self.title:
+            text += "Title: '" + self.title + "', "
+        if self.channel:
+            text += "Channel: '" + self.channel + "', "
+        text += "URL: " + self.url
+        return text
+
+
+class NotArchivedOnWaybackError(Exception):
+    pass
+
+
+class NoTitleOnWaybackError(Exception):
+    pass
 
 
 def get_playlist_entries(url):
@@ -74,79 +86,88 @@ def get_unavailable_videos(videos):
     return unavailable_videos
 
 
-def find_alternatives(video: YoutubeVideo):
+def get_youtube_search_results(query: str, number_results: int = 6) -> List[YoutubeVideo]:
     with yt_dlp.YoutubeDL(ydl_base_opts) as ydlp:
-        suggestions = []
-        # search only for video title
         results = ydlp.extract_info(
-            f"ytsearch3:{video.title}", download=False)['entries']
-        for result in results:
-            suggestions.append(YoutubeVideo(
-                result["webpage_url"], result["title"], result["channel"]))
-        # search for title and channel
-        if video.channel:
-            query = video.title + " " + video.channel
-            results = ydlp.extract_info(
-                f"ytsearch3:{query}", download=False)['entries']
-            for result in results:
-                suggestions.append(YoutubeVideo(
-                    result["webpage_url"], result["title"], result["channel"]))
-
-        return suggestions
+            f"ytsearch{str(number_results)}:{query}", download=False)['entries']
+        return [YoutubeVideo(entry["webpage_url"], entry["title"], entry["channel"])
+                for entry in results]
 
 
-def find_closest_match(video: YoutubeVideo, playlist):
-    closest_video = None
-    closest_ratio = -1
-    for candidate in playlist:
-        if video.url != candidate.url:
-            ratio = SequenceMatcher(None, video.title, candidate.title).ratio()
-            if ratio > closest_ratio:
-                closest_video = candidate
-    return closest_video
+def suggest_alternatives_from_title(video: YoutubeVideo) -> str:
+    # if youtube still tells us information about the video, we use this to find replacement
+    alternatives = get_youtube_search_results(video.title, 3)
+    alternatives += get_youtube_search_results(video.title + video.channel, 3)
+    result = "Based on video title and channel, maybe one of the following is a good substitute:\n"
+    for idx, suggestion in enumerate(alternatives):
+        result += " "*4 + str(idx+1) + ".: " + suggestion.display() + "\n"
+    return result + "\n"
 
 
-def suggest_alternatives(video: YoutubeVideo, playlist_entries):
-    cyan = "\033[0;36m"
-    reset_color = "\033[00m"
-
-    if not video.title or not video.channel:
-        # For some videos, youtube doesnt even tell us title/channel anymore
-        print(cyan + "A video with the following URL was added to the playlist, but is no longer available:")
-        print(video.url + reset_color)
-        print("Unfortunately Youtube doesn't tell us the title, so we cannot suggest alternatives. ")
-        archived_version = check_wayback(video)
-        if archived_version:
-            print(
-                "The wayback machine seems to have taken a snapshot though, check it out at " + archived_version)
-        # TODO get video title from html title
-        print("\n")
-
-        return
-
-    alternatives = find_alternatives(video)
-    print(cyan + "The following video was added to the playlist, but is no longer available:")
-    print(video.display() + reset_color)
-    print("Sometimes the reason for unavailablity is helpful: " +
-          video.unavailable_reason + ".")
-    print("Did you maybe already replace the video in the playlist? By title, the closest match is " +
-          find_closest_match(video, playlist_entries).display())
-    print("ALternatively, maybe one of the following is a good substitute:")
-    for idx, alternative in enumerate(alternatives):
-        print(" "*4 + str(idx+1) + ".: " + alternative.display())
-    print("\n")
+def suggest_alternatives_from_wayback(video) -> str:
+    # if we got no information about the video from youtube, we try the internet archive
+    result = "Youtube doesn't tell us any metadata about the unavailable video. "
+    try:
+        archived_version = find_wayback_url(video)
+        try:
+            archived_title = get_video_title_from_wayback(archived_version)
+            alternatives = get_youtube_search_results(archived_title, 6)
+            result += "But based on a snapshot from the Internet Archive, we think the video was titled '"
+            result += archived_title + \
+                "'. (Archived link: " + archived_version + "). \n"
+            result += "Consequently, maybe one of the following is a good substitute:\n"
+            for idx, suggestion in enumerate(alternatives):
+                result += " "*4 + str(idx+1) + ".: " + \
+                    suggestion.display() + "\n"
+        except NoTitleOnWaybackError as error:
+            result += "While it seems to have been archived by the Internet Archive's Wayback Machine, "
+            result += "we failed to automatically retreive the video title to suggest alternatives. "
+            result += "You can try to find a working snapshot of the video under the following URL: "
+            result += str(error)
+    except NotArchivedOnWaybackError:
+        result += "It also has not been archived by the Internet Archive's Wayback Machine. "
+        result += "Consequently, we cannot suggest any alternatives for this video :("
+    return result + "\n"
 
 
-def check_wayback(video: YoutubeVideo):
+def suggest_alternatives(video: YoutubeVideo) -> str:
+    result = "The following video was added to the playlist, but is no longer available: \n"
+    result += COLOR + video.display() + RESET_COLOR + "\n"
+    if video.title and video.channel:
+        result += suggest_alternatives_from_title(video)
+    else:
+        result += suggest_alternatives_from_wayback(video)
+    return result
+
+
+def find_wayback_url(video: YoutubeVideo) -> str:
     url = "https://archive.org/wayback/available?url=" + video.url
     response = requests.get(url)
     if response.status_code == 200 and 'application/json' in response.headers.get('Content-Type', ''):
         decoded = json.loads(response.content.decode('utf-8'))
         snapshot = decoded["archived_snapshots"]
         if snapshot == {}:
-            return None
+            raise NotArchivedOnWaybackError()
         else:
             return snapshot["closest"]["url"]
+
+
+def get_video_title_from_wayback(url: str) -> str:
+    response = requests.get(url)
+    if response.status_code == 200:
+        soup = BeautifulSoup(response.text, 'html.parser')
+        title = clean_wayback_video_title(soup.title.string)
+        if len(title) == 0:
+            raise NoTitleOnWaybackError(url)
+        return title
+
+
+def clean_wayback_video_title(title: str) -> str:
+    # heuristic based on looking at a few titles from the internet archive
+    cleaned = title.strip().lower()
+    cleaned = cleaned.removeprefix("youtube").removesuffix(
+        "youtube").strip().removesuffix("-")
+    return cleaned.strip()
 
 
 if __name__ == "__main__":
@@ -157,13 +178,18 @@ if __name__ == "__main__":
         "url", help="URL of a non-private playlist", type=str)
     args = parser.parse_args()
     url = args.url
+
+    print("In order to refresh your playlist, we will try to find alternatives to its unavailable videos.", flush=True)
+
     playlist_entries = get_playlist_entries(url)
-    print("Playlist contains {} videos, now checking which are available. This may take a second.".format(
+    print("Playlist contains {} videos, now checking which are available. This might take a second.".format(
         len(playlist_entries)))
+
     unavailable_videos = get_unavailable_videos(playlist_entries)
     print("\n Finished checking playlist, {} videos unavailable \n".format(
-        len(unavailable_videos)))
+        len(unavailable_videos)), flush=True)
+
     for idx, video in enumerate(unavailable_videos):
-        suggest_alternatives(video, playlist_entries)
+        print(suggest_alternatives(video), flush=True)
         if idx != len(unavailable_videos)-1:
-            input("Press Enter to go to next unavailable video...")
+            input("Press Enter to go to next unavailable video...\n\n")
