@@ -2,10 +2,11 @@ from dataclasses import dataclass
 import argparse
 import json
 from concurrent.futures import ThreadPoolExecutor
-from typing import List
+from typing import List, Tuple
 import requests
 from bs4 import BeautifulSoup
 import yt_dlp
+
 
 COLOR = "\033[0;36m"  # cyan
 RESET_COLOR = "\033[00m"
@@ -34,7 +35,7 @@ class YoutubeVideo:
     title: str
     channel: str
 
-    def display(self):
+    def display(self) -> str:
         text = ""
         if self.title:
             text += "Title: '" + self.title + "', "
@@ -52,20 +53,17 @@ class NoTitleOnWaybackError(Exception):
     pass
 
 
-def get_playlist_entries(url):
+def get_playlist_entries(url: str) -> List[YoutubeVideo]:
     ydl_opts = {
         'extract_flat': "in_playlist",  # just get video metadata
     }
     with yt_dlp.YoutubeDL(ydl_base_opts | ydl_opts) as ydlp:
         info = ydlp.extract_info(url)
-        entries = [
-            YoutubeVideo(entry["url"], entry["title"],
-                         entry["uploader"])
-            for entry in info["entries"]]
-        return entries
+        return [YoutubeVideo(entry["url"], entry["title"], entry["uploader"])
+                for entry in info["entries"]]
 
 
-def is_video_available(video: YoutubeVideo):
+def is_video_available(video: YoutubeVideo) -> Tuple[bool, YoutubeVideo]:
     ydl_opts = {
         "simulate": True,  # do not actually download anything
     }
@@ -77,7 +75,7 @@ def is_video_available(video: YoutubeVideo):
             return False, video
 
 
-def get_unavailable_videos(videos):
+def get_unavailable_videos(videos: List[YoutubeVideo]) -> List[YoutubeVideo]:
     unavailable_videos = []
     pool = ThreadPoolExecutor(max_workers=10)
     for available, video in pool.map(is_video_available, videos):
@@ -104,7 +102,7 @@ def suggest_alternatives_from_title(video: YoutubeVideo) -> str:
     return result + "\n"
 
 
-def suggest_alternatives_from_wayback(video) -> str:
+def suggest_alternatives_from_wayback(video: YoutubeVideo) -> str:
     # if we got no information about the video from youtube, we try the internet archive
     result = "Youtube doesn't tell us any metadata about the unavailable video. "
     try:
