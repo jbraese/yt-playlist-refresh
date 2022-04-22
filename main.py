@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 import argparse
 import json
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple
 import requests
 from bs4 import BeautifulSoup
@@ -77,10 +77,22 @@ def is_video_available(video: YoutubeVideo) -> Tuple[bool, YoutubeVideo]:
 
 def get_unavailable_videos(videos: List[YoutubeVideo]) -> List[YoutubeVideo]:
     unavailable_videos = []
-    pool = ThreadPoolExecutor(max_workers=10)
-    for available, video in pool.map(is_video_available, videos):
-        if not available:
-            unavailable_videos.append(video)
+    digits = len(str(len(videos)))
+    print("{} of {} done".format(str(0).zfill(
+        digits), len(videos)), flush=True, end="")
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(
+            is_video_available, video) for video in videos]
+        for idx, future in enumerate(as_completed(futures)):
+            if idx % 10 == 0:
+                print("\033[F") # cursor up one line
+                print("{} of {} done".format(str(idx).zfill(
+                    digits), len(videos)), flush=True, end="")
+            available, video = future.result()
+            if not available:
+                unavailable_videos.append(video)
+    print("\033[F") # cursor up one line
+    print("{}".format(str(len(videos)).zfill(digits)), flush=True)
     return unavailable_videos
 
 
@@ -90,6 +102,30 @@ def get_youtube_search_results(query: str, number_results: int = 6) -> List[Yout
             f"ytsearch{str(number_results)}:{query}", download=False)['entries']
         return [YoutubeVideo(entry["webpage_url"], entry["title"], entry["channel"])
                 for entry in results]
+
+
+def suggest_alternatives(videos: List[YoutubeVideo]):
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(
+            suggest_alternatives_for_one, video) for video in videos]
+        print("Waiting for the next suggestions...", end="\r")
+        for future in as_completed(futures):
+            input("Press Enter to see suggestions for next unavailable video...")
+            print("\033[F\033[F") # cursor up two lines
+            result = future.result()
+            print(result, flush=True)
+            print("Waiting for the next suggestions...", end="\r")
+    print(" "*50)  # erase last waiting message
+
+
+def suggest_alternatives_for_one(video: YoutubeVideo) -> str:
+    result = "The following video was added to the playlist, but is no longer available: \n"
+    result += COLOR + video.display() + RESET_COLOR + "\n"
+    if video.title and video.channel:
+        result += suggest_alternatives_from_title(video)
+    else:
+        result += suggest_alternatives_from_wayback(video)
+    return result
 
 
 def suggest_alternatives_from_title(video: YoutubeVideo) -> str:
@@ -128,16 +164,6 @@ def suggest_alternatives_from_wayback(video: YoutubeVideo) -> str:
     return result + "\n"
 
 
-def suggest_alternatives(video: YoutubeVideo) -> str:
-    result = "The following video was added to the playlist, but is no longer available: \n"
-    result += COLOR + video.display() + RESET_COLOR + "\n"
-    if video.title and video.channel:
-        result += suggest_alternatives_from_title(video)
-    else:
-        result += suggest_alternatives_from_wayback(video)
-    return result
-
-
 def find_wayback_url(video: YoutubeVideo) -> str:
     url = "https://archive.org/wayback/available?url=" + video.url
     response = requests.get(url)
@@ -154,10 +180,11 @@ def get_video_title_from_wayback(url: str) -> str:
     response = requests.get(url)
     if response.status_code == 200:
         soup = BeautifulSoup(response.text, 'html.parser')
-        title = clean_wayback_video_title(soup.title.string)
-        if len(title) == 0:
-            raise NoTitleOnWaybackError(url)
-        return title
+        if hasattr(soup, "title") and soup.title is not None:
+            title = clean_wayback_video_title(soup.title.string)
+            if len(title) > 0:
+                return title
+        raise NoTitleOnWaybackError(url)
 
 
 def clean_wayback_video_title(title: str) -> str:
@@ -187,7 +214,4 @@ if __name__ == "__main__":
     print("\n Finished checking playlist, {} videos unavailable \n".format(
         len(unavailable_videos)), flush=True)
 
-    for idx, video in enumerate(unavailable_videos):
-        print(suggest_alternatives(video), flush=True)
-        if idx != len(unavailable_videos)-1:
-            input("Press Enter to go to next unavailable video...\n\n")
+    suggest_alternatives(unavailable_videos)
