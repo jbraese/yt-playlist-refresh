@@ -77,10 +77,22 @@ def is_video_available(video: YoutubeVideo) -> Tuple[bool, YoutubeVideo]:
 
 def get_unavailable_videos(videos: List[YoutubeVideo]) -> List[YoutubeVideo]:
     unavailable_videos = []
-    pool = ThreadPoolExecutor(max_workers=10)
-    for available, video in pool.map(is_video_available, videos):
-        if not available:
-            unavailable_videos.append(video)
+    digits = len(str(len(videos)))
+    print("{} of {} done".format(str(0).zfill(
+        digits), len(videos)), flush=True, end="")
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(
+            is_video_available, video) for video in videos]
+        for idx, future in enumerate(as_completed(futures)):
+            if idx % 10 == 0:
+                print("\033[F") # cursor up one line
+                print("{} of {} done".format(str(idx).zfill(
+                    digits), len(videos)), flush=True, end="")
+            available, video = future.result()
+            if not available:
+                unavailable_videos.append(video)
+    print("\033[F") # cursor up one line
+    print("{}".format(str(len(videos)).zfill(digits)), flush=True)
     return unavailable_videos
 
 
@@ -98,7 +110,8 @@ def suggest_alternatives(videos: List[YoutubeVideo]):
             suggest_alternatives_for_one, video) for video in videos]
         print("Waiting for the next suggestions...", end="\r")
         for future in as_completed(futures):
-            input("Press Enter to see suggestions for next unavailable video...\n\n")
+            input("Press Enter to see suggestions for next unavailable video...")
+            print("\033[F\033[F") # cursor up two lines
             result = future.result()
             print(result, flush=True)
             print("Waiting for the next suggestions...", end="\r")
