@@ -3,6 +3,7 @@ channels:
   - conda-forge
   - defaults
 dependencies:
+  - autopep8=1.6.0=pyhd8ed1ab_1
   - beautifulsoup4=4.11.1=pyha770c72_0
   - brotlipy=0.7.0=py310he2412df_1004
   - bzip2=1.0.8=h8ffe710_4
@@ -16,6 +17,7 @@ dependencies:
   - libzlib=1.2.11=h8ffe710_1014
   - openssl=1.1.1n=h8ffe710_0
   - pip=22.0.4=pyhd8ed1ab_0
+  - pycodestyle=2.8.0=pyhd8ed1ab_0
   - pycparser=2.21=pyhd8ed1ab_0
   - pyopenssl=22.0.0=pyhd8ed1ab_0
   - pysocks=1.7.1=py310h5588dad_5
@@ -26,6 +28,7 @@ dependencies:
   - soupsieve=2.3.1=pyhd8ed1ab_0
   - sqlite=3.38.2=h8ffe710_0
   - tk=8.6.12=h8ffe710_0
+  - toml=0.10.2=pyhd8ed1ab_0
   - tzdata=2022a=h191b570_0
   - ucrt=10.0.20348.0=h57928b3_0
   - urllib3=1.26.9=pyhd8ed1ab_0
@@ -38,5 +41,6 @@ dependencies:
     - brotli==1.0.9
     - mutagen==1.45.1
     - pycryptodomex==3.14.1
+    - wayback==0.3.2
     - websockets==10.3
     - yt-dlp==2022.4.8
